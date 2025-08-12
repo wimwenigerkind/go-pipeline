@@ -1,0 +1,27 @@
+image: ubuntu:latest
+
+steps:
+  - name: setup
+    image: ubuntu:latest
+    script: |
+      echo "Setting up environment..."
+      apt-get update
+      apt-get install -y curl wget
+      echo "Setup completed"
+
+  - name: build
+    image: golang:1.21
+    script: |
+      echo "Building Go application..."
+      go version
+      echo "Build step completed"
+
+  - name: test
+    # This step will use the default image (ubuntu:latest)
+    command: ["echo", "Running tests..."]
+
+  - name: cleanup
+    image: alpine:latest
+    script: |
+      echo "Cleaning up temporary files..."
+      echo "Cleanup completed"
