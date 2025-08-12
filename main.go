@@ -39,12 +39,19 @@ func main() {
 	data, err := os.ReadFile("go-pipeline.yaml")
 	if err != nil {
 		fmt.Printf("Error reading pipeline file: %v\n", err)
+		fmt.Println("\nTip: Run with --generate-schema to create a sample configuration file")
 		os.Exit(1)
 	}
 
 	var pipeline Pipeline
 	if err := yaml.Unmarshal(data, &pipeline); err != nil {
 		fmt.Printf("Error parsing YAML: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Validate pipeline
+	if err := validatePipeline(pipeline); err != nil {
+		fmt.Printf("Pipeline validation error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -95,6 +102,34 @@ func main() {
 	}
 
 	fmt.Println("\nPipeline execution completed!")
+}
+
+func validatePipeline(pipeline Pipeline) error {
+	if len(pipeline.Steps) == 0 {
+		return fmt.Errorf("pipeline must have at least one step")
+	}
+
+	stepNames := make(map[string]bool)
+	for _, step := range pipeline.Steps {
+		if step.Name == "" {
+			return fmt.Errorf("step name cannot be empty")
+		}
+
+		if stepNames[step.Name] {
+			return fmt.Errorf("duplicate step name: %s", step.Name)
+		}
+		stepNames[step.Name] = true
+
+		if step.Image == "" && pipeline.Image == "" {
+			return fmt.Errorf("step %s has no image specified and no default image is set", step.Name)
+		}
+
+		if len(step.Command) > 0 && step.Script != "" {
+			return fmt.Errorf("step %s cannot have both command and script", step.Name)
+		}
+	}
+
+	return nil
 }
 
 func pullImage(cli *client.Client, ctx context.Context, imageName string) error {
