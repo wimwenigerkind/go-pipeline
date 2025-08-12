@@ -18,10 +18,11 @@ type Pipeline struct {
 }
 
 type Step struct {
-	Name    string   `yaml:"name"`
-	Image   string   `yaml:"image"`
-	Command []string `yaml:"command,omitempty"`
-	Script  string   `yaml:"script,omitempty"`
+	Name        string            `yaml:"name"`
+	Image       string            `yaml:"image"`
+	Command     []string          `yaml:"command,omitempty"`
+	Script      string            `yaml:"script,omitempty"`
+	Environment map[string]string `yaml:"environment,omitempty"`
 }
 
 func main() {
@@ -159,14 +160,26 @@ func executeStep(cli *client.Client, ctx context.Context, step Step) error {
 		cmd = []string{"echo", fmt.Sprintf("Executing step: %s", step.Name)}
 	}
 
-	// Create container
-	containerName := fmt.Sprintf("pipeline-step-%s", step.Name)
-	resp, err := cli.ContainerCreate(ctx, &container.Config{
+	// Create container configuration
+	containerConfig := &container.Config{
 		Image:        step.Image,
 		Cmd:          cmd,
 		AttachStdout: true,
 		AttachStderr: true,
-	}, nil, nil, nil, containerName)
+	}
+
+	// Set environment variables
+	if len(step.Environment) > 0 {
+		var envVars []string
+		for key, value := range step.Environment {
+			envVars = append(envVars, fmt.Sprintf("%s=%s", key, value))
+		}
+		containerConfig.Env = envVars
+	}
+
+	// Create container
+	containerName := fmt.Sprintf("pipeline-step-%s", step.Name)
+	resp, err := cli.ContainerCreate(ctx, containerConfig, nil, nil, nil, containerName)
 
 	if err != nil {
 		return fmt.Errorf("failed to create container: %w", err)

@@ -22,6 +22,9 @@ steps:
 
   - name: cleanup
     image: alpine:latest
+    environment:
+      ENVIRONMENT_VARIABLE: "This is an environment variable"
     script: |
       echo "Cleaning up temporary files..."
       echo "Cleanup completed"
+      echo $ENVIRONMENT_VARIABLE
