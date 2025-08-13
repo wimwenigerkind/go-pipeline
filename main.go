@@ -3,18 +3,21 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
-	"os"
-
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"gopkg.in/yaml.v3"
+	"io"
+	"os"
+	"sync"
+	"time"
 )
 
 type Pipeline struct {
-	Image string `yaml:"image"`
-	Steps []Step `yaml:"steps"`
+	Image       string     `yaml:"image"`
+	Steps       []Step     `yaml:"steps"`
+	Definitions Definition `yaml:"definitions,omitempty"`
 }
 
 type Step struct {
@@ -22,6 +25,15 @@ type Step struct {
 	Image       string            `yaml:"image"`
 	Command     []string          `yaml:"command,omitempty"`
 	Script      string            `yaml:"script,omitempty"`
+	Environment map[string]string `yaml:"environment,omitempty"`
+}
+
+type Definition struct {
+	Services map[string]Service `yaml:"services"`
+}
+
+type Service struct {
+	Image       string            `yaml:"image"`
 	Environment map[string]string `yaml:"environment,omitempty"`
 }
 
@@ -63,8 +75,33 @@ func main() {
 		}
 	}
 
-	// Pull images for each step
+	// Pull images for services and steps
 	pulledImages := make(map[string]bool)
+
+	// Pull service images first
+	if len(pipeline.Definitions.Services) > 0 {
+		for serviceName, service := range pipeline.Definitions.Services {
+			if service.Image == "" {
+				fmt.Printf("Service %s does not have an image specified.\n", serviceName)
+				continue
+			}
+
+			// Only pull each image once
+			if !pulledImages[service.Image] {
+				fmt.Printf("Pulling image for service %s: %s\n", serviceName, service.Image)
+				if err := pullImage(cli, ctx, service.Image); err != nil {
+					fmt.Printf("Error pulling image %s: %v\n", service.Image, err)
+					continue
+				}
+				pulledImages[service.Image] = true
+				fmt.Printf("Successfully pulled service image: %s\n", service.Image)
+			} else {
+				fmt.Printf("Service image %s already pulled, skipping...\n", service.Image)
+			}
+		}
+	}
+
+	// Pull step images
 	for _, step := range pipeline.Steps {
 		if step.Image == "" {
 			fmt.Printf("Step %s does not have an image specified.\n", step.Name)
@@ -79,9 +116,43 @@ func main() {
 				continue
 			}
 			pulledImages[step.Image] = true
-			fmt.Printf("Successfully pulled image: %s\n", step.Image)
+			fmt.Printf("Successfully pulled step image: %s\n", step.Image)
 		} else {
-			fmt.Printf("Image %s already pulled, skipping...\n", step.Image)
+			fmt.Printf("Step image %s already pulled, skipping...\n", step.Image)
+		}
+	}
+
+	// Create pipeline network
+	fmt.Println("\nCreating pipeline network:")
+	networkID, err := createPipelineNetwork(cli, ctx)
+	if err != nil {
+		fmt.Printf("Error creating pipeline network: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Ensure network is cleaned up on exit
+	defer func() {
+		fmt.Println("\nCleaning up network...")
+		cleanupNetwork(cli, ctx, networkID)
+	}()
+
+	// Start services
+	var serviceContainerIDs []string
+	if len(pipeline.Definitions.Services) > 0 {
+		fmt.Println("\nStarting services:")
+		ids, err := startServices(cli, ctx, pipeline.Definitions, networkID)
+		if err != nil {
+			fmt.Printf("Error starting services: %v\n", err)
+			os.Exit(1)
+		}
+		serviceContainerIDs = ids
+
+		if len(serviceContainerIDs) > 0 {
+			// Ensure services are cleaned up on exit
+			defer func() {
+				fmt.Println("\nCleaning up services...")
+				stopServices(cli, ctx, serviceContainerIDs)
+			}()
 		}
 	}
 
@@ -94,7 +165,7 @@ func main() {
 		}
 
 		fmt.Printf("Executing step: %s\n", step.Name)
-		if err := executeStep(cli, ctx, step); err != nil {
+		if err := executeStep(cli, ctx, step, networkID); err != nil {
 			fmt.Printf("Error executing step %s: %v\n", step.Name, err)
 			// You might want to decide whether to continue or exit here
 			continue
@@ -133,6 +204,84 @@ func validatePipeline(pipeline Pipeline) error {
 	return nil
 }
 
+func startServices(cli *client.Client, ctx context.Context, definition Definition, networkID string) ([]string, error) {
+	var serviceContainerIDs []string
+
+	for serviceName, service := range definition.Services {
+		fmt.Printf("Starting service: %s\n", serviceName)
+
+		// Create container configuration for service
+		containerConfig := &container.Config{
+			Image:        service.Image,
+			AttachStdout: false,
+			AttachStderr: false,
+		}
+
+		// Set environment variables for service
+		if len(service.Environment) > 0 {
+			var envVars []string
+			for key, value := range service.Environment {
+				envVars = append(envVars, fmt.Sprintf("%s=%s", key, value))
+			}
+			containerConfig.Env = envVars
+		}
+
+		// Create network configuration
+		networkingConfig := &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				networkID: {
+					Aliases: []string{serviceName}, // This enables DNS resolution by service name
+				},
+			},
+		}
+
+		// Create service container
+		containerName := fmt.Sprintf("pipeline-service-%s", serviceName)
+		resp, err := cli.ContainerCreate(ctx, containerConfig, nil, networkingConfig, nil, containerName)
+		if err != nil {
+			return serviceContainerIDs, fmt.Errorf("failed to create service container %s: %w", serviceName, err)
+		}
+
+		// Start service container
+		if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+			return serviceContainerIDs, fmt.Errorf("failed to start service container %s: %w", serviceName, err)
+		}
+
+		serviceContainerIDs = append(serviceContainerIDs, resp.ID)
+		fmt.Printf("Service %s started successfully (container: %s, network: %s)\n", serviceName, resp.ID[:12], networkID[:12])
+	}
+
+	return serviceContainerIDs, nil
+}
+
+func stopServices(cli *client.Client, ctx context.Context, serviceContainerIDs []string) {
+	var wg sync.WaitGroup
+
+	for _, containerID := range serviceContainerIDs {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+
+			fmt.Printf("Stopping service container: %s\n", id[:12])
+
+			// Stop the container
+			if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
+				fmt.Printf("Warning: failed to stop service container %s: %v\n", id[:12], err)
+			}
+
+			// Remove the container
+			if err := cli.ContainerRemove(ctx, id, container.RemoveOptions{}); err != nil {
+				fmt.Printf("Warning: failed to remove service container %s: %v\n", id[:12], err)
+			} else {
+				fmt.Printf("Service container %s stopped and removed\n", id[:12])
+			}
+		}(containerID)
+	}
+
+	wg.Wait()
+	fmt.Println("All services stopped and cleaned up")
+}
+
 func pullImage(cli *client.Client, ctx context.Context, imageName string) error {
 	reader, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
 	if err != nil {
@@ -147,7 +296,7 @@ func pullImage(cli *client.Client, ctx context.Context, imageName string) error 
 	return nil
 }
 
-func executeStep(cli *client.Client, ctx context.Context, step Step) error {
+func executeStep(cli *client.Client, ctx context.Context, step Step, networkID string) error {
 	// Prepare command
 	var cmd []string
 	if len(step.Command) > 0 {
@@ -177,9 +326,16 @@ func executeStep(cli *client.Client, ctx context.Context, step Step) error {
 		containerConfig.Env = envVars
 	}
 
+	// Create network configuration
+	networkingConfig := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			networkID: {},
+		},
+	}
+
 	// Create container
 	containerName := fmt.Sprintf("pipeline-step-%s", step.Name)
-	resp, err := cli.ContainerCreate(ctx, containerConfig, nil, nil, nil, containerName)
+	resp, err := cli.ContainerCreate(ctx, containerConfig, nil, networkingConfig, nil, containerName)
 
 	if err != nil {
 		return fmt.Errorf("failed to create container: %w", err)
@@ -225,4 +381,40 @@ func executeStep(cli *client.Client, ctx context.Context, step Step) error {
 	}
 
 	return nil
+}
+
+func createPipelineNetwork(cli *client.Client, ctx context.Context) (string, error) {
+	networkName := fmt.Sprintf("pipeline-network-%d", time.Now().Unix())
+
+	fmt.Printf("Creating pipeline network: %s\n", networkName)
+
+	// Create network configuration
+	networkConfig := network.CreateOptions{
+		Driver:     "bridge",
+		EnableIPv6: &[]bool{false}[0],
+		Internal:   false,
+	}
+
+	// Create the network
+	resp, err := cli.NetworkCreate(ctx, networkName, networkConfig)
+	if err != nil {
+		return "", fmt.Errorf("failed to create network: %w", err)
+	}
+
+	fmt.Printf("Pipeline network created successfully: %s\n", resp.ID[:12])
+	return resp.ID, nil
+}
+
+func cleanupNetwork(cli *client.Client, ctx context.Context, networkID string) {
+	if networkID == "" {
+		return
+	}
+
+	fmt.Printf("Removing pipeline network: %s\n", networkID[:12])
+
+	if err := cli.NetworkRemove(ctx, networkID); err != nil {
+		fmt.Printf("Warning: failed to remove network %s: %v\n", networkID[:12], err)
+	} else {
+		fmt.Printf("Pipeline network removed successfully\n")
+	}
 }
