@@ -7,6 +7,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"gopkg.in/yaml.v3"
 	"io"
 	"os"
@@ -357,8 +358,8 @@ func executeStep(cli *client.Client, ctx context.Context, step Step, networkID s
 	}
 	defer logReader.Close()
 
-	// Stream logs to stdout
-	if _, err := io.Copy(os.Stdout, logReader); err != nil {
+	// Stream logs to stdout (properly handle Docker log format)
+	if _, err := stdcopy.StdCopy(os.Stdout, os.Stderr, logReader); err != nil {
 		fmt.Printf("Warning: error reading container logs: %v\n", err)
 	}
 
