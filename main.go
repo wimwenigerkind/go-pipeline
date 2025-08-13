@@ -16,9 +16,10 @@ import (
 )
 
 type Pipeline struct {
-	Image       string     `yaml:"image"`
-	Steps       []Step     `yaml:"steps"`
-	Definitions Definition `yaml:"definitions,omitempty"`
+	Image       string              `yaml:"image"`
+	Steps       []Step              `yaml:"steps,omitempty"`
+	Definitions Definition          `yaml:"definitions,omitempty"`
+	Pipeline    map[string][]string `yaml:"pipeline,omitempty"`
 }
 
 type Step struct {
@@ -31,6 +32,7 @@ type Step struct {
 
 type Definition struct {
 	Services map[string]Service `yaml:"services"`
+	Steps    []Step             `yaml:"steps"`
 }
 
 type Service struct {
@@ -69,10 +71,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Get steps to execute from pipeline definition
+	stepsToExecute, err := resolvePipelineSteps(pipeline)
+	if err != nil {
+		fmt.Printf("Error resolving pipeline steps: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Set default image for steps that don't have one
-	for i, step := range pipeline.Steps {
+	for i, step := range stepsToExecute {
 		if step.Image == "" {
-			pipeline.Steps[i].Image = pipeline.Image
+			stepsToExecute[i].Image = pipeline.Image
 		}
 	}
 
@@ -103,7 +112,7 @@ func main() {
 	}
 
 	// Pull step images
-	for _, step := range pipeline.Steps {
+	for _, step := range stepsToExecute {
 		if step.Image == "" {
 			fmt.Printf("Step %s does not have an image specified.\n", step.Name)
 			continue
@@ -159,7 +168,7 @@ func main() {
 
 	// Execute pipeline steps
 	fmt.Println("\nExecuting pipeline steps:")
-	for _, step := range pipeline.Steps {
+	for _, step := range stepsToExecute {
 		if step.Image == "" {
 			fmt.Printf("Skipping step %s: no image specified\n", step.Name)
 			continue
@@ -178,12 +187,19 @@ func main() {
 }
 
 func validatePipeline(pipeline Pipeline) error {
-	if len(pipeline.Steps) == 0 {
-		return fmt.Errorf("pipeline must have at least one step")
+	// Check if we have step definitions
+	if len(pipeline.Definitions.Steps) == 0 {
+		return fmt.Errorf("pipeline must have step definitions")
 	}
 
+	// Check if we have pipeline definition
+	if len(pipeline.Pipeline) == 0 {
+		return fmt.Errorf("pipeline section must be defined")
+	}
+
+	// Validate step definitions
 	stepNames := make(map[string]bool)
-	for _, step := range pipeline.Steps {
+	for _, step := range pipeline.Definitions.Steps {
 		if step.Name == "" {
 			return fmt.Errorf("step name cannot be empty")
 		}
@@ -202,7 +218,61 @@ func validatePipeline(pipeline Pipeline) error {
 		}
 	}
 
+	// Validate pipeline references
+	for pipelineName, stepReferences := range pipeline.Pipeline {
+		if len(stepReferences) == 0 {
+			return fmt.Errorf("pipeline %s must have at least one step", pipelineName)
+		}
+
+		for _, stepRef := range stepReferences {
+			if !stepNames[stepRef] {
+				return fmt.Errorf("pipeline %s references unknown step: %s", pipelineName, stepRef)
+			}
+		}
+	}
+
 	return nil
+}
+
+func resolvePipelineSteps(pipeline Pipeline) ([]Step, error) {
+	// Create a map of step definitions for quick lookup
+	stepDefs := make(map[string]Step)
+	for _, step := range pipeline.Definitions.Steps {
+		stepDefs[step.Name] = step
+	}
+
+	// Use "default" pipeline if it exists, otherwise use the first pipeline
+	var pipelineName string
+	var stepReferences []string
+
+	if defaultPipeline, exists := pipeline.Pipeline["default"]; exists {
+		pipelineName = "default"
+		stepReferences = defaultPipeline
+	} else {
+		// Use the first pipeline we find
+		for name, steps := range pipeline.Pipeline {
+			pipelineName = name
+			stepReferences = steps
+			break
+		}
+	}
+
+	if len(stepReferences) == 0 {
+		return nil, fmt.Errorf("no pipeline found or pipeline %s is empty", pipelineName)
+	}
+
+	// Resolve step references to actual step definitions
+	var stepsToExecute []Step
+	for _, stepRef := range stepReferences {
+		stepDef, exists := stepDefs[stepRef]
+		if !exists {
+			return nil, fmt.Errorf("step definition not found: %s", stepRef)
+		}
+		stepsToExecute = append(stepsToExecute, stepDef)
+	}
+
+	fmt.Printf("Using pipeline: %s with %d steps\n", pipelineName, len(stepsToExecute))
+	return stepsToExecute, nil
 }
 
 func startServices(cli *client.Client, ctx context.Context, definition Definition, networkID string) ([]string, error) {

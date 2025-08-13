@@ -11,46 +11,57 @@ definitions:
       environment:
         MYSQL_DATABASE: 'pipelines'
         MYSQL_ROOT_PASSWORD: 'let_me_in'
-steps:
-  - name: setup
-    image: ubuntu:latest
-    script: |
-      echo "Setting up environment..."
-      apt-get update
-      apt-get install -y curl wget dnsutils iputils-ping
-      echo "Setup completed"
+  steps:
+    - name: setup
+      image: ubuntu:latest
+      script: |
+        echo "Setting up environment..."
+        apt-get update
+        apt-get install -y curl wget dnsutils iputils-ping
+        echo "Setup completed"
 
-  - name: test-dns
-    image: ubuntu:latest
-    script: |
-      echo "Testing DNS resolution to services..."
-      apt-get update -qq && apt-get install -y -qq iputils-ping dnsutils
-      echo "Testing connectivity to Redis..."
-      ping -c 2 redis || echo "Could not ping redis service"
-      echo "Testing connectivity to MySQL..."
-      ping -c 2 mysql || echo "Could not ping mysql service"
-      echo "Testing DNS lookup for Redis..."
-      nslookup redis || echo "Could not resolve redis"
-      echo "Testing DNS lookup for MySQL..."
-      nslookup mysql || echo "Could not resolve mysql"
-      echo "DNS resolution test completed"
+    - name: test-dns
+      image: ubuntu:latest
+      script: |
+        echo "Testing DNS resolution to services..."
+        apt-get update -qq && apt-get install -y -qq iputils-ping dnsutils
+        echo "Testing connectivity to Redis..."
+        ping -c 2 redis || echo "Could not ping redis service"
+        echo "Testing connectivity to MySQL..."
+        ping -c 2 mysql || echo "Could not ping mysql service"
+        echo "Testing DNS lookup for Redis..."
+        nslookup redis || echo "Could not resolve redis"
+        echo "Testing DNS lookup for MySQL..."
+        nslookup mysql || echo "Could not resolve mysql"
+        echo "DNS resolution test completed"
 
-  - name: build
-    image: golang:1.21
-    script: |
-      echo "Building Go application..."
-      go version
-      echo "Build step completed"
+    - name: build
+      image: golang:1.21
+      script: |
+        echo "Building Go application..."
+        go version
+        echo "Build step completed"
 
-  - name: test
-    # This step will use the default image (ubuntu:latest)
-    command: ["echo", "Running tests..."]
+    - name: test
+      # This step will use the default image (ubuntu:latest)
+      command: ["echo", "Running tests..."]
 
-  - name: cleanup
-    image: alpine:latest
-    environment:
-      ENVIRONMENT_VARIABLE: "This is an environment variable"
-    script: |
-      echo "Cleaning up temporary files..."
-      echo "Cleanup completed"
-      echo $ENVIRONMENT_VARIABLE
+    - name: cleanup
+      image: alpine:latest
+      environment:
+        ENVIRONMENT_VARIABLE: "This is an environment variable"
+      script: |
+        echo "Cleaning up temporary files..."
+        echo "Cleanup completed"
+        echo $ENVIRONMENT_VARIABLE
+
+pipeline:
+  default:
+    - setup
+    - test-dns
+    - setup
+    - cleanup
+    - setup
+    - build
+    - test
+    - setup
