@@ -15,6 +15,13 @@ import (
 	"time"
 )
 
+// Note: Things to implement in the future:
+// TODO: Add approval logic
+// TODO: Add retry logic for failed steps
+// TODO: Add support for parallel step execution
+// TODO: Add support for step dependencies
+// TODO: Add support for packages to be installed in the container without adding the specific apt, yum, etc. commands
+
 type Pipeline struct {
 	Image       string              `yaml:"image"`
 	Steps       []Step              `yaml:"steps,omitempty"`
