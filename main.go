@@ -51,6 +51,9 @@ func main() {
 
 	ctx := context.Background()
 
+	// Create unique pipeline ID to avoid naming conflicts
+	pipelineID := fmt.Sprintf("%d", time.Now().Unix())
+
 	// Load Pipeline configuration from go-pipeline.yaml file
 	data, err := os.ReadFile("go-pipeline.yaml")
 	if err != nil {
@@ -150,7 +153,7 @@ func main() {
 	var serviceContainerIDs []string
 	if len(pipeline.Definitions.Services) > 0 {
 		fmt.Println("\nStarting services:")
-		ids, err := startServices(cli, ctx, pipeline.Definitions, networkID)
+		ids, err := startServices(cli, ctx, pipeline.Definitions, networkID, pipelineID)
 		if err != nil {
 			fmt.Printf("Error starting services: %v\n", err)
 			os.Exit(1)
@@ -168,14 +171,14 @@ func main() {
 
 	// Execute pipeline steps
 	fmt.Println("\nExecuting pipeline steps:")
-	for _, step := range stepsToExecute {
+	for i, step := range stepsToExecute {
 		if step.Image == "" {
 			fmt.Printf("Skipping step %s: no image specified\n", step.Name)
 			continue
 		}
 
 		fmt.Printf("Executing step: %s\n", step.Name)
-		if err := executeStep(cli, ctx, step, networkID); err != nil {
+		if err := executeStep(cli, ctx, step, networkID, pipelineID, i); err != nil {
 			fmt.Printf("Error executing step %s: %v\n", step.Name, err)
 			// You might want to decide whether to continue or exit here
 			continue
@@ -275,7 +278,7 @@ func resolvePipelineSteps(pipeline Pipeline) ([]Step, error) {
 	return stepsToExecute, nil
 }
 
-func startServices(cli *client.Client, ctx context.Context, definition Definition, networkID string) ([]string, error) {
+func startServices(cli *client.Client, ctx context.Context, definition Definition, networkID, pipelineID string) ([]string, error) {
 	var serviceContainerIDs []string
 
 	for serviceName, service := range definition.Services {
@@ -306,8 +309,8 @@ func startServices(cli *client.Client, ctx context.Context, definition Definitio
 			},
 		}
 
-		// Create service container
-		containerName := fmt.Sprintf("pipeline-service-%s", serviceName)
+		// Create service container with unique name
+		containerName := fmt.Sprintf("pipeline-service-%s-%s", serviceName, pipelineID)
 		resp, err := cli.ContainerCreate(ctx, containerConfig, nil, networkingConfig, nil, containerName)
 		if err != nil {
 			return serviceContainerIDs, fmt.Errorf("failed to create service container %s: %w", serviceName, err)
@@ -367,7 +370,7 @@ func pullImage(cli *client.Client, ctx context.Context, imageName string) error 
 	return nil
 }
 
-func executeStep(cli *client.Client, ctx context.Context, step Step, networkID string) error {
+func executeStep(cli *client.Client, ctx context.Context, step Step, networkID, pipelineID string, stepIndex int) error {
 	// Prepare command
 	var cmd []string
 	if len(step.Command) > 0 {
@@ -404,8 +407,8 @@ func executeStep(cli *client.Client, ctx context.Context, step Step, networkID s
 		},
 	}
 
-	// Create container
-	containerName := fmt.Sprintf("pipeline-step-%s", step.Name)
+	// Create container with unique name including step index and pipeline ID
+	containerName := fmt.Sprintf("pipeline-step-%s-%s-%d", step.Name, pipelineID, stepIndex)
 	resp, err := cli.ContainerCreate(ctx, containerConfig, nil, networkingConfig, nil, containerName)
 
 	if err != nil {
