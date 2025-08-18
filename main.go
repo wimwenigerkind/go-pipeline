@@ -22,6 +22,8 @@ import (
 // TODO: Add support for parallel step execution
 // TODO: Add support for step dependencies
 // TODO: Implement feature to allow users to access the shell of a failed container via CLI
+// TODO: Add secret management
+// TODO: Allow to provide a private SSH key for the pipeline via environment variables
 
 type Pipeline struct {
 	Image       string              `yaml:"image"`
