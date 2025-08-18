@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,7 +21,6 @@ import (
 // TODO: Add retry logic for failed steps
 // TODO: Add support for parallel step execution
 // TODO: Add support for step dependencies
-// TODO: Add support for packages to be installed in the container without adding the specific apt, yum, etc. commands
 
 type Pipeline struct {
 	Image       string              `yaml:"image"`
@@ -35,6 +35,7 @@ type Step struct {
 	Command     []string          `yaml:"command,omitempty"`
 	Script      string            `yaml:"script,omitempty"`
 	Environment map[string]string `yaml:"environment,omitempty"`
+	Packages    []string          `yaml:"packages,omitempty"`
 }
 
 type Definition struct {
@@ -378,16 +379,39 @@ func pullImage(cli *client.Client, ctx context.Context, imageName string) error 
 }
 
 func executeStep(cli *client.Client, ctx context.Context, step Step, networkID, pipelineID string, stepIndex int) error {
-	// Prepare command
+	// Prepare command with package installation if needed
 	var cmd []string
-	if len(step.Command) > 0 {
-		cmd = step.Command
-	} else if step.Script != "" {
-		// If script is provided, execute it with sh
-		cmd = []string{"sh", "-c", step.Script}
+	var fullScript string
+
+	// Generate package installation command if packages are specified
+	if len(step.Packages) > 0 {
+		packageManager := detectPackageManager(step.Image)
+		packageInstallCmd := generatePackageInstallCommand(packageManager, step.Packages)
+		fmt.Printf("Installing packages for step %s: %v (using %s)\n", step.Name, step.Packages, packageManager)
+
+		if len(step.Command) > 0 {
+			// If command is provided, prepend package installation
+			fullScript = fmt.Sprintf("%s && %s", packageInstallCmd, strings.Join(step.Command, " "))
+			cmd = []string{"sh", "-c", fullScript}
+		} else if step.Script != "" {
+			// If script is provided, prepend package installation
+			fullScript = fmt.Sprintf("%s && %s", packageInstallCmd, step.Script)
+			cmd = []string{"sh", "-c", fullScript}
+		} else {
+			// Only package installation
+			cmd = []string{"sh", "-c", packageInstallCmd}
+		}
 	} else {
-		// Default command if none specified
-		cmd = []string{"echo", fmt.Sprintf("Executing step: %s", step.Name)}
+		// No packages to install, use original logic
+		if len(step.Command) > 0 {
+			cmd = step.Command
+		} else if step.Script != "" {
+			// If script is provided, execute it with sh
+			cmd = []string{"sh", "-c", step.Script}
+		} else {
+			// Default command if none specified
+			cmd = []string{"echo", fmt.Sprintf("Executing step: %s", step.Name)}
+		}
 	}
 
 	// Create container configuration
@@ -497,5 +521,60 @@ func cleanupNetwork(cli *client.Client, ctx context.Context, networkID string) {
 		fmt.Printf("Warning: failed to remove network %s: %v\n", networkID[:12], err)
 	} else {
 		fmt.Printf("Pipeline network removed successfully\n")
+	}
+}
+
+// detectPackageManager determines the package manager based on the container image
+func detectPackageManager(imageName string) string {
+	imageLower := strings.ToLower(imageName)
+
+	// Check for specific distributions
+	switch {
+	case strings.Contains(imageLower, "ubuntu") || strings.Contains(imageLower, "debian"):
+		return "apt"
+	case strings.Contains(imageLower, "centos") || strings.Contains(imageLower, "rhel") || strings.Contains(imageLower, "fedora"):
+		return "yum"
+	case strings.Contains(imageLower, "alpine"):
+		return "apk"
+	case strings.Contains(imageLower, "arch"):
+		return "pacman"
+	case strings.Contains(imageLower, "opensuse") || strings.Contains(imageLower, "sles"):
+		return "zypper"
+	default:
+		// Try to detect based on common base images
+		if strings.HasPrefix(imageLower, "ubuntu") || strings.HasPrefix(imageLower, "debian") {
+			return "apt"
+		} else if strings.HasPrefix(imageLower, "alpine") {
+			return "apk"
+		} else if strings.HasPrefix(imageLower, "centos") || strings.HasPrefix(imageLower, "fedora") {
+			return "yum"
+		}
+		// Default to apt for unknown images (most common)
+		return "apt"
+	}
+}
+
+// generatePackageInstallCommand creates the package installation command for the given package manager
+func generatePackageInstallCommand(packageManager string, packages []string) string {
+	if len(packages) == 0 {
+		return ""
+	}
+
+	packageList := strings.Join(packages, " ")
+
+	switch packageManager {
+	case "apt":
+		return fmt.Sprintf("apt-get update && apt-get install -y %s", packageList)
+	case "yum":
+		return fmt.Sprintf("yum install -y %s", packageList)
+	case "apk":
+		return fmt.Sprintf("apk add --no-cache %s", packageList)
+	case "pacman":
+		return fmt.Sprintf("pacman -Sy --noconfirm %s", packageList)
+	case "zypper":
+		return fmt.Sprintf("zypper install -y %s", packageList)
+	default:
+		// Fallback to apt
+		return fmt.Sprintf("apt-get update && apt-get install -y %s", packageList)
 	}
 }

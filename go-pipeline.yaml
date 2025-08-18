@@ -14,17 +14,22 @@ definitions:
   steps:
     - name: setup
       image: ubuntu:latest
+      packages:
+        - curl
+        - wget
+        - dnsutils
+        - iputils-ping
       script: |
         echo "Setting up environment..."
-        apt-get update
-        apt-get install -y curl wget dnsutils iputils-ping
         echo "Setup completed"
 
     - name: test-dns
       image: ubuntu:latest
+      packages:
+        - iputils-ping
+        - dnsutils
       script: |
         echo "Testing DNS resolution to services..."
-        apt-get update -qq && apt-get install -y -qq iputils-ping dnsutils
         echo "Testing connectivity to Redis..."
         ping -c 2 redis || echo "Could not ping redis service"
         echo "Testing connectivity to MySQL..."
@@ -46,6 +51,17 @@ definitions:
       # This step will use the default image (ubuntu:latest)
       command: ["echo", "Running tests..."]
 
+    - name: package-test
+      image: alpine:latest
+      packages:
+        - curl
+        - git
+      script: |
+        echo "Testing package installation on Alpine..."
+        curl --version
+        git --version
+        echo "Package installation test completed"
+
     - name: cleanup
       image: alpine:latest
       environment:
@@ -59,9 +75,7 @@ pipeline:
   default:
     - setup
     - test-dns
-    - setup
-    - cleanup
-    - setup
+    - package-test
     - build
     - test
-    - setup
+    - cleanup
