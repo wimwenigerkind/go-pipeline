@@ -21,6 +21,7 @@ import (
 // TODO: Add retry logic for failed steps
 // TODO: Add support for parallel step execution
 // TODO: Add support for step dependencies
+// TODO: Implement feature to allow users to access the shell of a failed container via CLI
 
 type Pipeline struct {
 	Image       string              `yaml:"image"`
